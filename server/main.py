@@ -24,6 +24,13 @@ submitted_restock_orders = []
 # Mutable counter so submitted orders get sequential, human-readable numbers
 restock_order_counter = {'value': 0}
 
+# In-memory tasks store
+tasks_store = []
+task_id_counter = {'value': 0}
+
+# In-memory purchase orders (augments the seed list from purchase_orders.json)
+po_id_counter = {'value': len(purchase_orders)}
+
 def filter_by_month(items: list, month: Optional[str]) -> list:
     """Filter items by month/quarter based on order_date field"""
     if not month or month == 'all':
@@ -130,6 +137,18 @@ class CreatePurchaseOrderRequest(BaseModel):
     unit_cost: float
     expected_delivery_date: str
     notes: Optional[str] = None
+
+class Task(BaseModel):
+    id: int
+    title: str
+    priority: str
+    dueDate: Optional[str] = None
+    status: str = "pending"
+
+class CreateTaskRequest(BaseModel):
+    title: str
+    priority: str = "medium"
+    dueDate: Optional[str] = None
 
 class RestockOrderItem(BaseModel):
     item_sku: str
@@ -422,6 +441,69 @@ def create_restock_order(request: CreateRestockOrderRequest):
 def get_restock_orders():
     """Get submitted restocking orders, newest first."""
     return list(reversed(submitted_restock_orders))
+
+@app.get("/api/tasks", response_model=List[Task])
+def get_tasks():
+    """Return all tasks, newest first."""
+    return list(reversed(tasks_store))
+
+@app.post("/api/tasks", response_model=Task)
+def create_task(request: CreateTaskRequest):
+    """Create a new task."""
+    task_id_counter['value'] += 1
+    task = {
+        "id": task_id_counter['value'],
+        "title": request.title,
+        "priority": request.priority,
+        "dueDate": request.dueDate,
+        "status": "pending"
+    }
+    tasks_store.append(task)
+    return task
+
+@app.delete("/api/tasks/{task_id}")
+def delete_task(task_id: int):
+    """Delete a task by ID."""
+    idx = next((i for i, t in enumerate(tasks_store) if t["id"] == task_id), None)
+    if idx is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    tasks_store.pop(idx)
+    return {"ok": True}
+
+@app.patch("/api/tasks/{task_id}", response_model=Task)
+def toggle_task(task_id: int):
+    """Toggle a task between pending and completed."""
+    task = next((t for t in tasks_store if t["id"] == task_id), None)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    task["status"] = "completed" if task["status"] == "pending" else "pending"
+    return task
+
+@app.post("/api/purchase-orders", response_model=PurchaseOrder)
+def create_purchase_order(request: CreatePurchaseOrderRequest):
+    """Create a purchase order for a backlog item."""
+    po_id_counter['value'] += 1
+    po = {
+        "id": f"PO-{po_id_counter['value']:04d}",
+        "backlog_item_id": request.backlog_item_id,
+        "supplier_name": request.supplier_name,
+        "quantity": request.quantity,
+        "unit_cost": request.unit_cost,
+        "expected_delivery_date": request.expected_delivery_date,
+        "status": "Pending",
+        "created_date": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+        "notes": request.notes
+    }
+    purchase_orders.append(po)
+    return po
+
+@app.get("/api/purchase-orders/{backlog_item_id}", response_model=PurchaseOrder)
+def get_purchase_order(backlog_item_id: str):
+    """Get the purchase order associated with a backlog item."""
+    po = next((p for p in purchase_orders if p["backlog_item_id"] == backlog_item_id), None)
+    if po is None:
+        raise HTTPException(status_code=404, detail="Purchase order not found")
+    return po
 
 if __name__ == "__main__":
     import uvicorn
